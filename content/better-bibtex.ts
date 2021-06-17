@@ -93,6 +93,7 @@ if (Preference.citeprocNoteCitekey) {
   log.debug('citeprocNoteCitekey: enabled')
   $patch$(Zotero.Utilities, 'itemToCSLJSON', original => function itemToCSLJSON(zoteroItem: { itemID: number, itemType: string }) {
     const cslItem = original.apply(this, arguments)
+    log.debug('citeprocNoteCitekey: patching object', zoteroItem instanceof Zotero.Item)
 
     if (!(zoteroItem instanceof Zotero.Item)) {
       const citekey = Zotero.BetterBibTeX.KeyManager.get(zoteroItem.itemID)
