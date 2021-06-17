@@ -153,7 +153,7 @@ export const CSLExporter = new class { // eslint-disable-line @typescript-eslint
         cache = this.postscript(csl, item, Translator, Zotero)
       }
       catch (err) {
-        if (Translator.preferences.testing && !Translator.preferences.ignorePostscriptErrors) throw err
+        if (Translator.preferences.testing) throw err
         cache = false
       }
 

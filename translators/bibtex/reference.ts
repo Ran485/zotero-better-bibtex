@@ -920,7 +920,7 @@ export class Reference {
       if (this.postscript(this, this.item, Translator, Zotero) === false) this.item.$cacheable = false
     }
     catch (err) {
-      if (Translator.preferences.testing && !Translator.preferences.ignorePostscriptErrors) throw err
+      if (Translator.preferences.testing) throw err
       log.error('Reference.postscript failed:', err)
       this.item.$cacheable = false
     }
