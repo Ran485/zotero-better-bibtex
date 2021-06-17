@@ -9,6 +9,7 @@ import type { Translators } from '../../typings/translators'
 import type { ParsedDate } from '../../content/dateparser'
 
 import { Translator } from '../lib/translator'
+import * as postscript from '../lib/postscript'
 
 import { Exporter } from './exporter'
 import { text2latex, replace_command_spacers } from './unicode_translator'
@@ -329,19 +330,24 @@ export class Reference {
   private quality_report: string[] = []
 
   public static installPostscript(): void {
-    let postscript = Translator.preferences.postscript
-
-    if (typeof postscript !== 'string' || postscript.trim() === '') return
-
     try {
-      postscript = `this.inPostscript = true; ${postscript}; this.inPostscript = false;`
-      // workaround for https://github.com/Juris-M/zotero/issues/65
-      Reference.prototype.postscript = new Function('reference', 'item', 'Translator', 'Zotero', postscript) as (reference: any, item: any) => boolean
-      log.debug(`Installed postscript: ${JSON.stringify(postscript)}`)
+      if (Translator.preferences.postscript.trim()) {
+        // workaround for https://github.com/Juris-M/zotero/issues/65
+        Reference.prototype.postscript = new Function(
+          'reference',
+          'item',
+          'Translator',
+          'Zotero',
+          postscript.body(Translator.preferences.postscript, 'this.inPostscript')
+        ) as postscript.Postscript
+      }
+      else {
+        Reference.prototype.postscript = postscript.noop as postscript.Postscript
+      }
     }
     catch (err) {
-      if (Translator.preferences.testing) throw err
-      log.error(`Failed to compile postscript: ${err}\n\n${JSON.stringify(postscript)}`)
+      Reference.prototype.postscript = postscript.noop as postscript.Postscript
+      log.debug('failed to install postscript', err, '\n', postscript.body(Translator.preferences.postscript))
     }
   }
 
@@ -916,14 +922,15 @@ export class Reference {
       this.has[field] = value
     }
 
+    let allow: postscript.Allow = { cache: true, write: true }
     try {
-      if (this.postscript(this, this.item, Translator, Zotero) === false) this.item.$cacheable = false
+      allow = this.postscript(this, this.item, Translator, Zotero)
     }
     catch (err) {
-      if (Translator.preferences.testing) throw err
       log.error('Reference.postscript failed:', err)
-      this.item.$cacheable = false
+      allow.cache = false
     }
+    this.item.$cacheable = this.item.$cacheable && allow.cache
 
     for (const name of Translator.skipFields) {
       this.remove(name)
@@ -952,7 +959,7 @@ export class Reference {
     ref += this.qualityReport()
     ref += '\n'
 
-    Zotero.write(ref)
+    if (allow.write) Zotero.write(ref)
 
     this.metadata.DeclarePrefChars = Exporter.unique_chars(this.metadata.DeclarePrefChars)
 
@@ -1340,7 +1347,9 @@ export class Reference {
     return latex
   }
 
-  private postscript(_reference, _item, _translator, _zotero): boolean { return true } // eslint-disable-line no-empty,@typescript-eslint/no-empty-function
+  private postscript(_reference, _item, _translator, _zotero): postscript.Allow {
+    return { cache: true, write: true }
+  }
 
   private qualityReport(): string {
     // the quality report will access a bunch of fields not to export them but just to see if they were used, and that triggers the cacheDisabler proxy when
