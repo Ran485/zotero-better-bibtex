@@ -297,6 +297,8 @@ class PatternFormatter {
 
   public parsePattern(pattern) {
     const { formatter, postfixes } = (parser.parse(pattern, { items, methods }) as { formatter: string, postfixes: string[]})
+    log.debug('formatter function:', formatter)
+    log.debug('formatter postfixes:', postfixes)
 
     for (const postfix of postfixes) {
       const expected = `${Date.now()}`
@@ -386,7 +388,10 @@ class PatternFormatter {
   /** returns the journal abbreviation, or, if not found, the journal title, If 'automatic journal abbreviation' is enabled in the BBT settings,
    * it will use the same abbreviation filter Zotero uses in the wordprocessor integration. You might want to use the `abbr` filter on this.
    */
-  public $journal() { return JournalAbbrev.get(this.item.item, true) || this.item.getField('publicationTitle') } // eslint-disable-line @typescript-eslint/no-unsafe-return
+  public $journal() {
+    // this.item.item is the native item stored inside the this.item sorta-proxy
+    return JournalAbbrev.get(this.item.item, true) || this.item.getField('publicationTitle')
+  } // eslint-disable-line @typescript-eslint/no-unsafe-return
 
   /** The last name of up to N authors. If there are more authors, "EtAl" is appended. */
   public $authors(onlyEditors: boolean, withInitials: boolean, joiner: string, n?:number) {
@@ -537,14 +542,12 @@ class PatternFormatter {
   }
 
   /** The date of the publication */
-  // eslint-disable-next-line @typescript-eslint/no-inferrable-types
-  public $date(format: string = '%Y-%m-%d') {
+  public $date(format: string = '%Y-%m-%d') { // eslint-disable-line @typescript-eslint/no-inferrable-types
     return this._format_date(this.item.date, format)
   }
 
-  /** A line from the extra field */
-  // eslint-disable-next-line @typescript-eslint/no-inferrable-types
-  public $extra(variable: string) {
+  /** A pseudo-field from the extra field. eg if you have `Original date: 1970` in your `extra` field, you can get it as `[extra=originalDate]`, or `tex.shortauthor: APA` which you could get with `[extra=tex.shortauthor]` */
+  public $extra(variable: string) { // eslint-disable-line @typescript-eslint/no-inferrable-types
     const variables = variable.toLowerCase().trim().split(/\s*\/\s*/).filter(varname => varname)
     if (!variables.length) return ''
 
@@ -585,6 +588,11 @@ class PatternFormatter {
 
   private padYear(year: string, length): string {
     return year ? year.replace(/[0-9]+/, y => y.length >= length ? y : (`0000${y}`).slice(-length)): ''
+  }
+
+  /** discards the input */
+  public _discard(value: string) { // eslint-disable-line @typescript-eslint/no-unused-vars
+    return ''
   }
 
   /** transforms date/time to local time. Mainly useful for dateAdded and dateModified as it requires an ISO-formatted input. */
@@ -708,8 +716,7 @@ class PatternFormatter {
    * would select the first four words. If `number` is not given, all words from `start` to the end of the list are
    * selected.
    */
-  // eslint-disable-next-line @typescript-eslint/no-inferrable-types
-  public _select(value: string, start: number = 1, n?: number): string {
+  public _select(value: string, start: number = 1, n?: number): string { // eslint-disable-line @typescript-eslint/no-inferrable-types
     const values = (value || '').split(/\s+/)
     let end = values.length
 
@@ -719,8 +726,7 @@ class PatternFormatter {
   }
 
   /** (`substring=start,n`) selects `n` (default: all) characters starting at `start` (default: 1) */
-  // eslint-disable-next-line @typescript-eslint/no-inferrable-types
-  public _substring(value: string, start: number = 1, n?: number): string {
+  public _substring(value: string, start: number = 1, n?: number): string { // eslint-disable-line @typescript-eslint/no-inferrable-types
     if (typeof n === 'undefined') n = value.length
 
     return (value || '').slice(start - 1, (start - 1) + n)

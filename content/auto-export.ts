@@ -5,12 +5,14 @@ import { log } from './logger'
 
 import { Events } from './events'
 import { DB } from './db/main'
+import { DB as Cache, selector as cacheSelector } from './db/cache'
 import { Translators } from './translators'
-import { Preference } from '../gen/preferences'
+import { Preferences, Preference } from '../gen/preferences'
 import * as ini from 'ini'
 import fold2ascii from 'fold-to-ascii'
 import { pathSearch } from './path-search'
 import { Scheduler } from './scheduler'
+import { flash } from './flash'
 
 class Git {
   public enabled: boolean
@@ -96,29 +98,37 @@ class Git {
     if (!this.enabled) return
 
     try {
-      await this.exec(this.git, ['-C', this.path, 'pull'])
+      const warning = await this.exec(this.git, ['-C', this.path, 'pull'])
+      if (warning) flash('autoexport git pull warning', `${this.quote(this.path)}: ${warning}`, 1)
     }
     catch (err) {
+      flash('autoexport git pull failed', `${this.quote(this.path)}: ${err.message}`, 1)
       log.error(`could not pull in ${this.path}:`, err)
-      this.enabled = false
     }
   }
 
   public async push(msg) {
     if (!this.enabled) return
 
+    const warnings: string[] = []
     try {
-      await this.exec(this.git, ['-C', this.path, 'add', this.bib])
-      await this.exec(this.git, ['-C', this.path, 'commit', '-m', msg])
-      await this.exec(this.git, ['-C', this.path, 'push'])
+      warnings.push(await this.exec(this.git, ['-C', this.path, 'add', this.bib]))
+      warnings.push(await this.exec(this.git, ['-C', this.path, 'commit', '-m', msg]))
+      warnings.push(await this.exec(this.git, ['-C', this.path, 'push']))
+      const warning = warnings.find(w => w)
+      if (warning) flash('autoexport git pull warning', `${this.quote(this.path)}: ${warning}`, 1)
     }
     catch (err) {
+      flash('autoexport git push failed', `${this.quote(this.path)}: ${err.message}`, 1)
       log.error(`could not push ${this.bib} in ${this.path}`, err)
-      this.enabled = false
     }
   }
 
-  private async exec(cmd, args): Promise<boolean> {
+  private quote(cmd: string, args?: string[]) {
+    return [cmd].concat(args || []).map((arg: string) => arg.match(/['"]|\s/) ? JSON.stringify(arg) : arg).join(' ')
+  }
+
+  private async exec(cmd, args): Promise<string> {
     if (typeof cmd === 'string') cmd = new FileUtils.File(cmd)
 
     if (!cmd.isExecutable()) throw new Error(`${cmd.path} is not an executable`)
@@ -127,16 +137,16 @@ class Git {
     proc.init(cmd)
     // proc.startHidden = true // won't work until Zotero upgrades to post-55 Firefox
 
-    return new Promise<boolean>((resolve, reject) => {
+    return new Promise<string>((resolve, reject) => {
       proc.runwAsync(args, args.length, { observe: function(subject, topic) { // eslint-disable-line object-shorthand, prefer-arrow/prefer-arrow-functions
         if (topic !== 'process-finished') {
-          reject(new Error(`${cmd.path} failed`))
+          reject(new Error(`${this.quote(cmd.path, args)} failed, exit status: ${topic}`))
         }
         else if (proc.exitValue !== 0) {
-          reject(new Error(`${cmd.path} returned exit status ${proc.exitValue}`))
+          resolve(`${this.quote(cmd.path, args)} returned exit status ${proc.exitValue}`)
         }
         else {
-          resolve(true)
+          resolve('')
         }
       }})
     })
@@ -276,6 +286,7 @@ const queue = new class TaskQueue {
     }
 
     ae.status = 'done'
+    log.debug('auto-export done')
     this.autoexports.update(ae)
   }
 
@@ -328,14 +339,13 @@ const queue = new class TaskQueue {
 }
 
 // export singleton: https://k94n.com/es6-modules-single-instance-pattern
-export const AutoExport = new class CAutoExport { // eslint-disable-line @typescript-eslint/naming-convention,no-underscore-dangle,id-blacklist,id-match
+export const AutoExport = new class _AutoExport { // eslint-disable-line @typescript-eslint/naming-convention,no-underscore-dangle,id-blacklist,id-match
   public db: any
   public progress: Map<number, number>
-  public cacherate: Map<number, number>
 
   constructor() {
     this.progress = new Map
-    this.cacherate = new Map
+
     Events.on('libraries-changed', ids => this.schedule('library', ids))
     Events.on('libraries-removed', ids => this.remove('library', ids))
     Events.on('collections-changed', ids => this.schedule('collection', ids))
@@ -343,7 +353,6 @@ export const AutoExport = new class CAutoExport { // eslint-disable-line @typesc
     Events.on('export-progress', (percent, _translator, ae) => {
       if (typeof ae === 'number') this.progress.set(ae, percent)
     })
-    Events.on('cache-rate', (ae, percent) => { this.cacherate.set(ae, percent) })
   }
 
   public async init() {
@@ -355,6 +364,10 @@ export const AutoExport = new class CAutoExport { // eslint-disable-line @typesc
     for (const ae of this.db.find({ status: { $ne: 'done' } })) {
       queue.add(ae)
     }
+
+    this.db.on(['delete'], ae => {
+      this.progress.delete(ae.$loki)
+    })
 
     if (Preference.autoExport === 'immediate') { queue.resume() }
   }
@@ -393,11 +406,63 @@ export const AutoExport = new class CAutoExport { // eslint-disable-line @typesc
   public run(id) {
     queue.run(id).catch(err => log.error('AutoExport.run:', err))
   }
+
+  public async cached($loki) {
+    log.debug('cache-rate: calculating cache rate for', $loki)
+    const start = Date.now()
+    const ae = this.db.get($loki)
+
+    const itemTypeIDs: number[] = ['attachment', 'note', 'annotation'].map(type => {
+      try {
+        return Zotero.ItemTypes.getID(type) as number
+      }
+      catch (err) {
+        return undefined
+      }
+    })
+
+    const itemIDs: Set<number> = new Set
+    await this.itemIDs(ae, ae.id, itemTypeIDs, itemIDs)
+    if (itemIDs.size === 0) return 100 // eslint-disable-line no-magic-numbers
+
+    const options = {
+      exportNotes: !!ae.exportNotes,
+      useJournalAbbreviation: !!ae.useJournalAbbreviation,
+    }
+    const prefs: Partial<Preferences> = override.names.reduce((acc, pref) => {
+      acc[pref] = ae[pref]
+      return acc
+    }, {})
+
+    const cached = {
+      serialized: Cache.getCollection('itemToExportFormat').find({ itemID: { $in: [...itemIDs] } }).length,
+      export: Cache.getCollection(Translators.byId[ae.translatorID].label).find(cacheSelector([...itemIDs], options, prefs)).length,
+    }
+
+    log.debug('cache-rate: cache rate for', $loki, {...cached, items: itemIDs.size}, 'took', Date.now() - start)
+    return Math.min(Math.round((100 * (cached.serialized + cached.export)) / (itemIDs.size * 2)), 100) // eslint-disable-line no-magic-numbers
+  }
+
+  private async itemIDs(ae, id: number, itemTypeIDs: number[], itemIDs: Set<number>) {
+    let items
+    if (ae.type === 'collection') {
+      const coll = await Zotero.Collections.getAsync(id)
+      if (ae.recursive) {
+        for (const collID of coll.getChildren(true)) {
+          await this.itemIDs(ae, collID, itemTypeIDs, itemIDs)
+        }
+      }
+      items = coll.getChildItems()
+    }
+    else if (ae.type === 'library') {
+      items = await Zotero.Items.getAll(id)
+    }
+
+    items.filter(item => !itemTypeIDs.includes(item.itemTypeID)).forEach(item => itemIDs.add(item.id))
+  }
 }
 
 Events.on('preference-changed', pref => {
-  AutoExport.cacherate = new Map
-
   if (pref !== 'autoExport') return
 
   switch (Preference.autoExport) {

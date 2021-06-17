@@ -448,6 +448,7 @@ class ZoteroItem {
     magazine_article:   'magazineArticle', // mendeley made-up entry type
     manual:             'report',
     mastersthesis:      'thesis',
+    movie:              'film',
     misc:               'document',
     newspaper_article:  'newspaperArticle', // mendeley made-up entry type
     online:             'webpage',
@@ -458,9 +459,11 @@ class ZoteroItem {
     software:           'computerProgram',
     softwaremodule:     'computerProgram',
     softwareversion:    'computerProgram',
+    talk:               'presentation',
     techreport:         'report',
     thesis:             'thesis',
     unpublished:        'manuscript',
+    video:              'film',
     web_page:           'webpage', // mendeley made-up entry type
     webpage:            'webpage', // papers3 made-up entry type
   }
@@ -476,7 +479,7 @@ class ZoteroItem {
     this.bibtex.type = this.bibtex.type.toLowerCase()
     this.type = this.typeMap[this.bibtex.type]
     if (!this.type) {
-      this.errors.push({ message: `Don't know what Zotero type to make of '${this.bibtex.type}' for ${this.bibtex.key ? `@${this.bibtex.key}` : 'unnamed item'}, importing as ${this.type = 'journalArticle'}` })
+      this.errors.push({ message: `Don't know what Zotero type to make of '${this.bibtex.type}' for ${this.bibtex.key ? `@${this.bibtex.key}` : 'unnamed item'}, importing as ${this.type = 'document'}` })
       this.hackyFields.push(`tex.referencetype: ${this.bibtex.type}`)
     }
     if (this.type === 'book' && (this.bibtex.fields.title || []).length && (this.bibtex.fields.booktitle || []).length) this.type = 'bookSection'
@@ -524,10 +527,10 @@ class ZoteroItem {
     if (this.bibtex.fields.subtitle) title = title.concat(this.bibtex.fields.subtitle)
 
     if (this.type === 'encyclopediaArticle') {
-      this.item.publicationTitle = title.join(' - ')
+      this.item.publicationTitle = title.join('. ')
     }
     else {
-      this.item.title = title.join(' - ')
+      this.item.title = title.join('. ')
     }
     return true
   }
@@ -558,7 +561,9 @@ class ZoteroItem {
   protected $institution(value, field) { return this.$publisher(value, field) }
   protected $school(value, field) { return this.$publisher(value, field) }
 
-  protected $address(value) { return this.set('place', value) }
+  protected $address(value) {
+    return this.set('place', value, ['place'])
+  }
   protected $location(value) {
     if (this.type === 'conferencePaper') {
       this.hackyFields.push(`Place: ${value.replace(/\n+/g, '')}`)
@@ -937,6 +942,11 @@ class ZoteroItem {
     return this.set(field, value)
   }
 
+  protected $origdate(value) {
+    if (!this.fallback(['originaldate'], value)) this.hackyFields.push(`Original Date: ${value}`)
+    return true
+  }
+
   private error(err) {
     log.error(err)
     throw new Error(err)
@@ -956,6 +966,21 @@ class ZoteroItem {
       'editor',
       'translator',
     ]
+    const creatorTypeMap = {
+      author: 'author',
+      'film.author': 'director',
+      editor: 'editor',
+      'film.editor': 'scriptwriter',
+      translator: 'translator',
+      bookauthor: 'bookAuthor',
+      collaborator: 'contributor',
+      commentator: 'commenter',
+      director: 'director',
+      editora: 'editor',
+      editorb: 'editor',
+      editors: 'editor',
+      scriptwriter: 'scriptwriter',
+    }
     const creatorsForType = Zotero.Utilities.getCreatorsForType(this.item.itemType)
     for (const type of creatorTypes.concat(Object.keys(this.bibtex.creators).filter(other => !creatorTypes.includes(other)))) {
       // 'assignee' is not a creator field for Zotero
@@ -965,20 +990,8 @@ class ZoteroItem {
       const creators = this.bibtex.fields[type].length ? this.bibtex.creators[type] : []
       delete this.bibtex.fields[type]
 
-      let creatorType = {
-        author: 'author',
-        editor: 'editor',
-        translator: 'translator',
-        bookauthor: 'bookAuthor',
-        collaborator: 'contributor',
-        commentator: 'commenter',
-        director: 'director',
-        editora: 'editor',
-        editorb: 'editor',
-        editors: 'editor',
-        scriptwriter: 'scriptwriter',
-      }[type]
-      if (creatorType === 'author') creatorType = ['inventor', 'programmer', 'author'].find(t => creatorsForType.includes(t))
+      let creatorType = creatorTypeMap[`${this.item.itemType}.${type}`] || creatorTypeMap[type]
+      if (creatorType === 'author') creatorType = ['director', 'inventor', 'programmer', 'author'].find(t => creatorsForType.includes(t))
       if (!creatorsForType.includes(creatorType)) creatorType = null
       if (!creatorType && type === 'bookauthor' && creatorsForType.includes('author')) creatorType = 'author'
       if (!creatorType) creatorType = 'contributor'
@@ -1038,16 +1051,20 @@ class ZoteroItem {
             this.hackyFields.push(`ISSN: ${value}`)
             break
 
-          case 'origdate':
-            this.hackyFields.push(`Original Date: ${value}`)
-
-            break
           case 'pmid':
             this.hackyFields.push(`PMID: ${value}`)
             break
 
           case 'subject': // otherwise it's picked up by the sibject -> title mapper, and I don't think that's right
             this.hackyFields.push(`tex.${field}: ${value}`)
+            break
+
+          case 'origtitle':
+            this.hackyFields.push(`Original title: ${value}`)
+            break
+
+          case 'origlocation':
+            this.hackyFields.push(`Original publisher place: ${value}`)
             break
 
           default:
